@@ -5,6 +5,9 @@
 //
 // See <https://github.com/trentm/node-bunyan>.
 //
+// TODO:
+// [.] Clean up the code for follow functionality
+// [.] Consider adding tail argument
 
 var VERSION = '0.22.2';
 
@@ -20,12 +23,14 @@ var child_process = require('child_process'),
     exec = child_process.exec,
     execFile = child_process.execFile;
 var assert = require('assert');
+var events = require('events');
 
 var nodeSpawnSupportsStdio = (
     Number(process.version.split('.')[0]) >= 0 ||
     Number(process.version.split('.')[1]) >= 8);
 
-
+var __hasProp = {}.hasOwnProperty,
+  __extends = function(child, parent) { for (var key in parent) { if (__hasProp.call(parent, key)) child[key] = parent[key]; } function ctor() { this.constructor = child; } ctor.prototype = parent.prototype; child.prototype = new ctor(); child.__super__ = parent.prototype; return child; }
 
 //---- globals and constants
 
@@ -218,6 +223,8 @@ function printHelp() {
     p('                  inspect: node.js `util.inspect` output');
     p('                  short: like "long", but more concise');
     p('  -j            shortcut for `-o json`');
+    p('  -f --follow   Follow log file like tail -f');
+    p('                Only one file is supported');
     p('');
     p('Log Levels:');
     p('  Either numeric values or their associated strings are valid for the');
@@ -452,6 +459,10 @@ function parseArgv(argv) {
                     throw new Error('unknown output mode: "'+name+'"');
                 }
                 break;
+            case '-f':
+            case '--follow':
+                    parsed.follow = true;
+                    break;
             case '-j': // output with JSON.stringify
                 parsed.outputMode = OM_JSON;
                 break;
@@ -1402,6 +1413,13 @@ function main(argv) {
     }
     usingAnsiCodes = opts.color; // intentionally global
     var stylize = (opts.color ? stylizeWithColor : stylizeWithoutColor);
+    
+    if (opts.follow && opts.args.length != 1){
+        warn('bunyan: error: One file is required when follow is enabled. file(s) passed = "(%s)" ',
+            opts.args.join(' '));
+        return drainStdoutAndExit(1);
+    }
+//[.] TODO - Gate for more conditions
 
     // Pager.
     var nodeVer = process.versions.node.split('.').map(Number);
@@ -1489,15 +1507,82 @@ function main(argv) {
                     warn('bunyan: unexpected error: %s', err.stack || err);
                     return drainStdoutAndExit(1);
                 }
-                cleanupAndExit(retval);
+                if(!opts.follow) {
+                    cleanupAndExit(retval);
+                }
             }
         );
+        _lw = new LogWatcher(files[0], opts, stylize);
+        _lw.watchFile()
+        
     } else {
         processStdin(opts, stylize, function () {
             cleanupAndExit(retval);
         });
     }
 }
+
+
+
+  
+  LogWatcher = (function(_super) {
+
+    __extends(LogWatcher, _super);
+
+    function LogWatcher(file, opts, stylize) {
+        this.file = file;
+        this.opts = opts;
+        this.stylize = stylize;
+      
+        if (!fs.existsSync(this.file)) {
+            throw new Error("FATAL - file not found: "+this.file);
+        }
+    }
+
+    LogWatcher.prototype.watchFile = function() {
+p("watchFile called. file = "+this.file)
+      var currSize, watcher;
+      warn("Watching file: '" + this.file + "'");
+      currSize = fs.statSync(this.file).size;
+      var watcher = fs.watch(this.file);
+      watcher.on('rename', function(event, filename) {
+p("file rename detected")
+          watcher.close();
+          this.watchFile();
+      });
+      
+      watcher.on('change', function(event, filename) {
+p("file change detected")
+            return fs.stat(_lw.file, function(err, stat) {
+                // [.] TODO - Consider moving this to a function call to re-use code
+                asyncForEach([_lw.file],
+                    function (file, next) {
+                        processFile(_lw.file, _lw.opts, _lw.stylize, function (err) {
+                            if (err) {
+                                warn('bunyan: %s', err.message);
+                                retval += 1;
+                            }
+                            next();
+                        });
+                    },
+                    function (err) {
+                        if (err) {
+                            warn('bunyan: unexpected error: %s', err.stack || err);
+                            return drainStdoutAndExit(1);
+                        }
+                    }
+                );
+                // END TODO
+                return currSize = stat.size;
+          });
+      });
+      
+    };
+
+    return LogWatcher;
+
+  })(events.EventEmitter);
+
 
 if (require.main === module) {
     // HACK guard for <https://github.com/trentm/json/issues/24>.
