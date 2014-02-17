@@ -223,10 +223,13 @@ function printHelp() {
     p('                  inspect: node.js `util.inspect` output');
     p('                  short: like "long", but more concise');
     p('  -j            shortcut for `-o json`');
-    p('  -f --follow   Follow log file like tail -f');
+    p('  -f            Follow log file like tail -f');
     p('                Only one file is supported');
     p('  -t LINES      start reading log from the last LINES rows in log file. ');
     p('                Similar to tail -n');
+    p('  -r MILLIESEC  rigorous follow mode. When watching a log file, add a secondary check ');
+    p('                using fs.stat at an interval of MILLISEC. Enabled by default on Windows');
+    p('                set at 1000. To disable on windows, set to -1.');
     p('');
     p('Log Levels:');
     p('  Either numeric values or their associated strings are valid for the');
@@ -382,8 +385,10 @@ function parseArgv(argv) {
         strict: false,
         pids: null,
         pidsType: null,
-        tailLines: -1,
-        follow: false
+        follow: false,
+        tail_lines: -1,
+        rig_check: false,
+        rig_check_ms: -1
     };
 
     // Turn '-iH' into '-i -H', except for argument-accepting options.
@@ -464,19 +469,30 @@ function parseArgv(argv) {
                 }
                 break;
             case '-f':
-            case '--follow':
                     parsed.follow = true;
                     break;
             case '-t':
                 var tailArg = args.shift();
-                var tailLines = parseInt(tailArg)
-                if (isNaN(tailLines)) {
+                var tail_lines = parseInt(tailArg)
+                if (isNaN(tail_lines)) {
                     throw new Error(format('Number required after -t parameter "%s"', tailArg));
                 }
-                if (tailLines<0) {
+                if (tail_lines<0) {
                     throw new Error(format('Tail lines for -t parameter must be >= 0. "-t %s"', tailArg));
                 }
-                parsed.tailLines = tailLines;
+                parsed.tail_lines = tail_lines;
+                break;
+            case '-r':
+                var check_msArg = args.shift();
+                var rig_check_ms = parseInt(check_msArg)
+                if (isNaN(rig_check_ms)) {
+                    throw new Error(format('Number required after -r parameter "%s"', check_msArg));
+                }
+                if (rig_check_ms==0) {
+                    throw new Error(format('Milliseconds for -r parameter must be -1 or a positive number. "-r %s"', tailArg));
+                }
+                parsed.rig_check=true
+                parsed.rig_check_ms = rig_check_ms;
                 break;
 
             case '-j': // output with JSON.stringify
@@ -1435,6 +1451,25 @@ function main(argv) {
             opts.args.join(' '));
         return drainStdoutAndExit(1);
     }
+
+    if(opts.follow){
+        if (!opts.rig_check){ 
+            if(/^win/.test(process.platform)){
+                opts.rig_check=true
+                opts.rig_check_ms=1000
+            }
+        } else {
+            if(opts.rig_check_ms==-1){
+                opts.rig_check=false
+            }
+        }
+    } else {
+        if (opts.rig_check){ 
+            warn('bunyan: error: Rigorous mode cannot be enabled (-r) when follow mode (-f) is disabled. passed = "(%s)" ',
+                opts.args.join(' '));
+            return drainStdoutAndExit(1);
+        }
+    }
 //[.] TODO - Gate for more conditions
 
     // Pager.
@@ -1508,7 +1543,7 @@ function main(argv) {
         files.forEach(function (file) {
             streams[file] = { stream: null, records: [], done: false }
         });
-        if(opts.follow || opts.tailLines !=-1){
+        if(opts.follow || opts.tail_lines !=-1){
             _lw = new LogWatcher(files[0], opts, stylize);
             _lw.watchFile()
             
@@ -1603,13 +1638,14 @@ _LWP.watchFile = function() {
             })
         });
         
-        // . Paranoid check for Windohs
-        // . [.] TODO - make this optional
-        _lw.to_wfm = setTimeout(function to_wfm(){_lw.watchFileManually()},1000);
+        // . Rigorous file watching
+        if(_lw.opts.rig_check){
+            _lw.to_wfm = setTimeout(function to_wfm(){_lw.rigorousFileWatcher()},_lw.opts.rig_check_ms);
+        }
     }
   
 };
-_LWP.watchFileManually = function(){
+_LWP.rigorousFileWatcher = function(){
     fs.stat(this.file, function(err, stat) {
         if(err){
             console.fatal("FATAL - fs.stat error: "+err+" - "+err.stack);
@@ -1618,7 +1654,7 @@ _LWP.watchFileManually = function(){
             _lw.e_file_change(_lw.file, stat)
         }
     })
-    this.to_wfm = setTimeout(function to_wfm(){_lw.watchFileManually()},1000);
+    this.to_wfm = setTimeout(function to_wfm(){_lw.rigorousFileWatcher()},_lw.opts.rig_check_ms);
 }
 _LWP.fsWatch_rename = function(event, filename){
     p("Log file renamed. Exiting.")
@@ -1641,7 +1677,7 @@ _LWP._processFile = function(stat_cur) {
 
     if(t.isFirst){
         iStart=0
-        if(t.opts.tailLines>-1){
+        if(t.opts.tail_lines>-1){
             // first run wc -l to get total number of lines
             wc = exec('wc -l '+t.file,
                 function (err, stdout, stderr) {
@@ -1661,8 +1697,8 @@ _LWP._processFile = function(stat_cur) {
                         return drainStdoutAndExit(1);                    
                     }
                     var iLT =aWC[0]
-                    iLineIgn=iLT<t.opts.tailLines?iLT:iLT-t.opts.tailLines
-//p("t.opts.tailLines = "+t.opts.tailLines)
+                    iLineIgn=iLT<t.opts.tail_lines?iLT:iLT-t.opts.tail_lines
+//p("t.opts.tail_lines = "+t.opts.tail_lines)
 //p("iLT = "+iLT)
 //p("iLineIgn = "+iLineIgn)
                     __start_read()
