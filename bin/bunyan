@@ -7,7 +7,7 @@
 //
 // TODO:
 // [.] Clean up the code for follow functionality
-// [.] Consider adding tail argument
+// [.] Consider adding tail -n logic
 
 var VERSION = '0.22.2';
 
@@ -23,7 +23,6 @@ var child_process = require('child_process'),
     exec = child_process.exec,
     execFile = child_process.execFile;
 var assert = require('assert');
-var events = require('events');
 
 var nodeSpawnSupportsStdio = (
     Number(process.version.split('.')[0]) >= 0 ||
@@ -225,6 +224,8 @@ function printHelp() {
     p('  -j            shortcut for `-o json`');
     p('  -f --follow   Follow log file like tail -f');
     p('                Only one file is supported');
+    p('  -t LINES      start reading log from the last LINES rows in log file. ');
+    p('                Similar to tail -n');
     p('');
     p('Log Levels:');
     p('  Either numeric values or their associated strings are valid for the');
@@ -379,7 +380,9 @@ function parseArgv(argv) {
         conditions: null,
         strict: false,
         pids: null,
-        pidsType: null
+        pidsType: null,
+        tailLines: -1,
+        follow: false
     };
 
     // Turn '-iH' into '-i -H', except for argument-accepting options.
@@ -463,6 +466,18 @@ function parseArgv(argv) {
             case '--follow':
                     parsed.follow = true;
                     break;
+            case '-t':
+                var tailArg = args.shift();
+                var tailLines = parseInt(tailArg)
+                if (isNaN(tailLines)) {
+                    throw new Error(format('Number required after -t parameter "%s"', tailArg));
+                }
+                if (tailLines<0) {
+                    throw new Error(format('Tail lines for-t parameter must be >= 0. "-t %s"', tailArg));
+                }
+                parsed.tailLines = tailLines;
+                break;
+
             case '-j': // output with JSON.stringify
                 parsed.outputMode = OM_JSON;
                 break;
@@ -1492,28 +1507,31 @@ function main(argv) {
         files.forEach(function (file) {
             streams[file] = { stream: null, records: [], done: false }
         });
-        asyncForEach(files,
-            function (file, next) {
-                processFile(file, opts, stylize, function (err) {
+        if(opts.tailLines || opts.follow){
+            _lw = new LogWatcher(files[0], opts, stylize);
+            _lw.watchFile()
+            
+        } else {
+            asyncForEach(files,
+                function (file, next) {
+                    processFile(file, opts, stylize, function (err) {
+                        if (err) {
+                            warn('bunyan: %s', err.message);
+                            retval += 1;
+                        }
+                        next();
+                    });
+                },
+                function (err) {
                     if (err) {
-                        warn('bunyan: %s', err.message);
-                        retval += 1;
+                        warn('bunyan: unexpected error: %s', err.stack || err);
+                        return drainStdoutAndExit(1);
                     }
-                    next();
-                });
-            },
-            function (err) {
-                if (err) {
-                    warn('bunyan: unexpected error: %s', err.stack || err);
-                    return drainStdoutAndExit(1);
-                }
-                if(!opts.follow) {
                     cleanupAndExit(retval);
                 }
-            }
-        );
-        _lw = new LogWatcher(files[0], opts, stylize);
-        _lw.watchFile()
+            );
+        }
+
         
     } else {
         processStdin(opts, stylize, function () {
@@ -1524,64 +1542,125 @@ function main(argv) {
 
 
 
+/* Log Watcher */  
+function LogWatcher(file, opts, stylize){
+    this.file = file;
+    this.opts = opts;
+    this.stylize = stylize;
+    this.lastTS = (new Date()).getTime()
   
-  LogWatcher = (function(_super) {
-
-    __extends(LogWatcher, _super);
-
-    function LogWatcher(file, opts, stylize) {
-        this.file = file;
-        this.opts = opts;
-        this.stylize = stylize;
-      
-        if (!fs.existsSync(this.file)) {
-            throw new Error("FATAL - file not found: "+this.file);
-        }
+    if (!fs.existsSync(this.file)) {
+        throw new Error("FATAL - file not found: "+this.file);
     }
+}
+    
+var _LWP = LogWatcher.prototype
 
-    LogWatcher.prototype.watchFile = function() {
-p("watchFile called. file = "+this.file)
-      var currSize, watcher;
-      warn("Watching file: '" + this.file + "'");
-      currSize = fs.statSync(this.file).size;
-      var watcher = fs.watch(this.file);
-      watcher.on('rename', function(event, filename) {
-p("file rename detected")
-          watcher.close();
-          this.watchFile();
-      });
+_LWP.watchFile = function() {
+//p("watchFile called. file = "+this.file)
+    var currSize, fs_watch;
+    var stat_cur = fs.statSync(this.file);
+//p("Watching file: '" + this.file + "'");
+    currSize = fs.statSync(this.file).size;
+    var fs_watch = fs.watch(this.file);
+
+    
+    _lw.isFirst=true
+
+    if(!this.opts.follow){
+        fs.stat(_lw.file, function(err, stat) {
+            if(err){
+                console.fatal("FATAL - fs.stat error: "+err+" - "+err.stack);
+                return drainStdoutAndExit(1);
+            } else {
+                _lw._processFile(stat)
+            }
+        })
+        
+    } else {
+        _lw.stat_last=stat_cur
+        _lw.to_wfm = setTimeout(function to_wfm(){_lw.watchFileManually()},1000);
+
+        fs_watch.on('rename', function(event, filename){
+            _lw.fsWatch_rename(event, filename)
+        });
       
-      watcher.on('change', function(event, filename) {
-p("file change detected")
-            return fs.stat(_lw.file, function(err, stat) {
-                // [.] TODO - Consider moving this to a function call to re-use code
-                asyncForEach([_lw.file],
-                    function (file, next) {
-                        processFile(_lw.file, _lw.opts, _lw.stylize, function (err) {
-                            if (err) {
-                                warn('bunyan: %s', err.message);
-                                retval += 1;
-                            }
-                            next();
-                        });
-                    },
-                    function (err) {
-                        if (err) {
-                            warn('bunyan: unexpected error: %s', err.stack || err);
-                            return drainStdoutAndExit(1);
-                        }
-                    }
-                );
-                // END TODO
-                return currSize = stat.size;
-          });
-      });
-      
-    };
+        fs_watch.on('change', function(event, filename){
+            fs.stat(_lw.file, function(err, stat) {
+                if(err){
+                    console.fatal("FATAL - fs.stat error: "+err+" - "+err.stack);
+                    return drainStdoutAndExit(1);
+                } else {
+                    _lw.e_file_change(_lw.file, stat)
+                }
+            })
+        });
+       }
+  
+};
+_LWP.watchFileManually = function(){
+    fs.stat(this.file, function(err, stat) {
+        if(err){
+            console.fatal("FATAL - fs.stat error: "+err+" - "+err.stack);
+            return drainStdoutAndExit(1);
+        } else {
+            _lw.e_file_change(_lw.file, stat)
+        }
+    })
+    this.to_wfm = setTimeout(function to_wfm(){_lw.watchFileManually()},1000);
+}
+_LWP.fsWatch_rename = function(event, filename){
+    p("Log file renamed. Exiting.")
+    return drainStdoutAndExit(1);
+}
 
-    return LogWatcher;
+_LWP.e_file_change = function(filename, stat) {
+    if(this.stat_last.size!=stat.size||this.stat_last.mtime.getTime()!=stat.mtime.getTime()){
+//p("file change detected - lastTS = "+this.lastTS)
+        
+        this._processFile(stat)
+        this.stat_last = stat
+    }
+}
 
-  })(events.EventEmitter);
+_LWP._processFile = function(stat_cur) {
+    var rstream,bH;
+// TODO - implement logic to handle tail -n  functionality here...
+    if(this.isFirst){
+        
+    }
+    
+    
+    if (stat_cur.size < this.stat_last.size) {
+        return;
+    }
+    rstream = fs.createReadStream(this.file, {
+        encoding: 'utf8',
+        start: this.stat_last.size,
+        end: stat_cur.size
+    });
+    rstream.on('data', function(data) {
+        var line, lines, _len, _results;
+        lines = data.split("\n");
+        for (var i = 0, _len = lines.length; i < _len; i++) {
+            line = lines[i];
+            if (line) {
+              handleLogLine(_lw.file, line, _lw.opts, _lw.stylize);
+              bH=true
+            }
+        }
+    });
+    
+    rstream.on('close', function(data) {
+        if(!_lw.opts.follow){
+            if(!bH){p("(none)");}
+            return drainStdoutAndExit(1);
+        }
+    })
+
+};
+/* END Log Watcher */
+
 
 
 if (require.main === module) {
