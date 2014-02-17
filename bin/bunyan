@@ -7,7 +7,8 @@
 //
 // TODO:
 // [.] Clean up the code for follow functionality
-// [.] Consider adding tail -n logic
+// [x] Consider adding tail -n logic
+// [.] Stress test the tail -n logic
 
 var VERSION = '0.22.2';
 
@@ -473,7 +474,7 @@ function parseArgv(argv) {
                     throw new Error(format('Number required after -t parameter "%s"', tailArg));
                 }
                 if (tailLines<0) {
-                    throw new Error(format('Tail lines for-t parameter must be >= 0. "-t %s"', tailArg));
+                    throw new Error(format('Tail lines for -t parameter must be >= 0. "-t %s"', tailArg));
                 }
                 parsed.tailLines = tailLines;
                 break;
@@ -1507,7 +1508,7 @@ function main(argv) {
         files.forEach(function (file) {
             streams[file] = { stream: null, records: [], done: false }
         });
-        if(opts.tailLines || opts.follow){
+        if(opts.follow || opts.tailLines !=-1){
             _lw = new LogWatcher(files[0], opts, stylize);
             _lw.watchFile()
             
@@ -1579,12 +1580,18 @@ _LWP.watchFile = function() {
         
     } else {
         _lw.stat_last=stat_cur
-        _lw.to_wfm = setTimeout(function to_wfm(){_lw.watchFileManually()},1000);
-
+        
+        
+        // Initial call to process file
+        _lw._processFile(stat_cur)
+        
+        // File change handlers
+        // . rename handler
         fs_watch.on('rename', function(event, filename){
             _lw.fsWatch_rename(event, filename)
         });
-      
+        
+        // . change handler
         fs_watch.on('change', function(event, filename){
             fs.stat(_lw.file, function(err, stat) {
                 if(err){
@@ -1595,7 +1602,11 @@ _LWP.watchFile = function() {
                 }
             })
         });
-       }
+        
+        // . Paranoid check for Windohs
+        // . [.] TODO - make this optional
+        _lw.to_wfm = setTimeout(function to_wfm(){_lw.watchFileManually()},1000);
+    }
   
 };
 _LWP.watchFileManually = function(){
@@ -1617,46 +1628,93 @@ _LWP.fsWatch_rename = function(event, filename){
 _LWP.e_file_change = function(filename, stat) {
     if(this.stat_last.size!=stat.size||this.stat_last.mtime.getTime()!=stat.mtime.getTime()){
 //p("file change detected - lastTS = "+this.lastTS)
-        
         this._processFile(stat)
         this.stat_last = stat
     }
 }
 
 _LWP._processFile = function(stat_cur) {
-    var rstream,bH;
-// TODO - implement logic to handle tail -n  functionality here...
-    if(this.isFirst){
+    var t=this,rstream,bH,iStart,iLineCtr=0,iLineIgn=-1;
+//p("_processFile - called");
+
+
+
+    if(t.isFirst){
+        iStart=0
+        if(t.opts.tailLines>-1){
+            // first run wc -l to get total number of lines
+            wc = exec('wc -l '+t.file,
+                function (err, stdout, stderr) {
+                    if (err || stderr!=="") {
+                        console.log('FATAL - Could not exec wc -l. stderr = '+stderr+'\n Error = ' + (err?(err+' - '+err.stack):'(none)')+'\n~');
+                        return drainStdoutAndExit(1);
+                    }
+                    if(stdout===""){
+                        console.log('FATAL - stdout for exec wc -l is blank and there was no error or stderr!');
+                        return drainStdoutAndExit(1);                    
+                    }
+                    // If here all is good
+                    var aWC = /\s*([0-9]+)\.*/.exec(stdout)
+
+                    if(!aWC||aWC.length!=2){
+                        console.log('FATAL - stdout for exec wc -l could not be parsed stdout = "'+stdout+'"');
+                        return drainStdoutAndExit(1);                    
+                    }
+                    var iLT =aWC[0]
+                    iLineIgn=iLT<t.opts.tailLines?iLT:iLT-t.opts.tailLines
+//p("t.opts.tailLines = "+t.opts.tailLines)
+//p("iLT = "+iLT)
+//p("iLineIgn = "+iLineIgn)
+                    __start_read()
+                }
+            );
+        } else {
+            __start_read()
+        }
+    } else {
+        iStart=t.stat_last.size
+        if (stat_cur.size < iStart) {
+            return;
+        }
+        __start_read()
+    }
+    
+    t.stat_last=stat_cur
+    t.isFirst=false
+    
+    function __start_read() {
+        rstream = fs.createReadStream(t.file, {
+            encoding: 'utf8',
+            start: iStart,
+            end: stat_cur.size
+        });
         
-    }
-    
-    
-    if (stat_cur.size < this.stat_last.size) {
-        return;
-    }
-    rstream = fs.createReadStream(this.file, {
-        encoding: 'utf8',
-        start: this.stat_last.size,
-        end: stat_cur.size
-    });
-    rstream.on('data', function(data) {
-        var line, lines, _len, _results;
-        lines = data.split("\n");
-        for (var i = 0, _len = lines.length; i < _len; i++) {
-            line = lines[i];
-            if (line) {
-              handleLogLine(_lw.file, line, _lw.opts, _lw.stylize);
-              bH=true
+        rstream.on('data', function(data) {
+
+            var line, lines, _len, _results;
+            lines = data.split("\n");
+    //console.log("lines: "+lines.length)
+
+            for (var i = 0, _len = lines.length; i < _len; i++) {
+                line = lines[i];
+                if (line) {
+                    if(iLineIgn!=-1){
+                        iLineCtr++
+                        if(iLineCtr-1<iLineIgn){continue}
+                    }
+                    handleLogLine(_lw.file, line, _lw.opts, _lw.stylize);
+                    bH=true              
+                }
             }
-        }
-    });
-    
-    rstream.on('close', function(data) {
-        if(!_lw.opts.follow){
-            if(!bH){p("(none)");}
-            return drainStdoutAndExit(1);
-        }
-    })
+        });
+        
+        rstream.on('close', function(data) {
+            if(!_lw.opts.follow){
+                if(!bH){p("(none)");}
+                return drainStdoutAndExit(1);
+            }
+        })
+    }
 
 };
 /* END Log Watcher */
