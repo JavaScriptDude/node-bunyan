@@ -277,7 +277,7 @@ var streams = {};
 function gotRecord(file, line, rec, opts, stylize)
 {
     var time = new Date(rec.time);
-
+    
     streams[file]['records'].push({ line: line, rec: rec, time: time });
     emitNextRecord(opts, stylize);
 }
@@ -317,7 +317,7 @@ function emitNextRecord(opts, stylize)
         minfile = undefined;
         ready = true;
         for (ofile in streams) {
-
+        
             if (streams[ofile].stream === null ||
                 (!streams[ofile].done && streams[ofile].records.length === 0)) {
                 ready = false;
@@ -331,7 +331,7 @@ function emitNextRecord(opts, stylize)
                 minfile = ofile;
             }
         }
-
+        
         if (!ready || minfile === undefined) {
             for (ofile in streams) {
                 if (!streams[ofile].stream || streams[ofile].done)
@@ -663,7 +663,6 @@ var minValidRecord = {
  */
 function handleLogLine(file, line, opts, stylize) {
     currLine = line; // intentionally global
-
     // Emit non-JSON lines immediately.
     var rec;
     if (!line) {
@@ -1578,7 +1577,8 @@ function main(argv) {
 
 
 
-/* Log Watcher */  
+// Log Watcher 
+// Note: _lw is the signleton instance of LogWatcher
 function LogWatcher(file, opts, stylize){
     this.file = file;
     this.opts = opts;
@@ -1594,24 +1594,14 @@ var _LWP = LogWatcher.prototype
 
 _LWP.watchFile = function() {
 //p("watchFile called. file = "+this.file)
-    var currSize, fs_watch;
+    var fs_watch;
     var stat_cur = fs.statSync(this.file);
-//p("Watching file: '" + this.file + "'");
-    currSize = fs.statSync(this.file).size;
     var fs_watch = fs.watch(this.file);
 
-    
     _lw.isFirst=true
 
     if(!this.opts.follow){
-        fs.stat(_lw.file, function(err, stat) {
-            if(err){
-                console.fatal("FATAL - fs.stat error: "+err+" - "+err.stack);
-                return drainStdoutAndExit(1);
-            } else {
-                _lw._processFile(stat)
-            }
-        })
+        _lw._processFile(stat_cur)
         
     } else {
         _lw.stat_last=stat_cur
@@ -1729,8 +1719,6 @@ _LWP._processFile = function(stat_cur) {
 
             var line, lines, _len, _results;
             lines = data.split("\n");
-    //console.log("lines: "+lines.length)
-
             for (var i = 0, _len = lines.length; i < _len; i++) {
                 line = lines[i];
                 if (line) {
@@ -1738,7 +1726,7 @@ _LWP._processFile = function(stat_cur) {
                         iLineCtr++
                         if(iLineCtr-1<iLineIgn){continue}
                     }
-                    handleLogLine(_lw.file, line, _lw.opts, _lw.stylize);
+                    handleLogLine(null, line, _lw.opts, _lw.stylize);
                     bH=true              
                 }
             }
