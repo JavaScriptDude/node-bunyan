@@ -1669,31 +1669,29 @@ _LWP._processFile = function(stat_cur) {
         iStart=0
         if(t.opts.tail_lines>-1){
             // first run wc -l to get total number of lines
-            wc = exec('wc -l '+t.file,
-                function (err, stdout, stderr) {
-                    if (err || stderr!=="") {
-                        console.log('FATAL - Could not exec wc -l. stderr = '+stderr+'\n Error = ' + (err?(err+' - '+err.stack):'(none)')+'\n~');
-                        return drainStdoutAndExit(1);
-                    }
-                    if(stdout===""){
-                        console.log('FATAL - stdout for exec wc -l is blank and there was no error or stderr!');
-                        return drainStdoutAndExit(1);                    
-                    }
-                    // If here all is good
-                    var aWC = /\s*([0-9]+)\.*/.exec(stdout)
-
-                    if(!aWC||aWC.length!=2){
-                        console.log('FATAL - stdout for exec wc -l could not be parsed stdout = "'+stdout+'"');
-                        return drainStdoutAndExit(1);                    
-                    }
-                    var iLT =aWC[0]
-                    iLineIgn=iLT<t.opts.tail_lines?iLT:iLT-t.opts.tail_lines
-//p("t.opts.tail_lines = "+t.opts.tail_lines)
-//p("iLT = "+iLT)
-//p("iLineIgn = "+iLineIgn)
-                    __start_read()
+            var wc = exec('wc -l '+t.file,function (err, stdout, stderr) {
+                if (err || stderr!=="") {
+                    console.log('FATAL - Could not exec wc -l. stderr = '+stderr+'\n Error = ' + (err?(err+' - '+err.stack):'(none)')+'\n~');
+                    return drainStdoutAndExit(1);
                 }
-            );
+                if(stdout===""){
+                    console.log('FATAL - stdout for exec wc -l is blank and there was no error or stderr!');
+                    return drainStdoutAndExit(1);                    
+                }
+                // If here all is good
+                var aWC = /\s*([0-9]+)\.*/.exec(stdout)
+
+                if(!aWC||aWC.length!=2){
+                    console.log('FATAL - stdout for exec wc -l could not be parsed stdout = "'+stdout+'"');
+                    return drainStdoutAndExit(1);                    
+                }
+                var total_lines =aWC[0]
+                iLineIgn=total_lines<t.opts.tail_lines?0:total_lines-t.opts.tail_lines
+//p("t.opts.tail_lines = "+t.opts.tail_lines)
+//p("total_lines = "+total_lines)
+//p("iLineIgn = "+iLineIgn)
+                __start_read()
+            });
         } else {
             __start_read()
         }
