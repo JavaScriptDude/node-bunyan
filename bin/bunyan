@@ -214,6 +214,7 @@ function printHelp() {
     p('  --color       Colorize output. Defaults to try if output');
     p('                stream is a TTY.');
     p('  --no-color    Force no coloring (e.g. terminal doesn\'t support it)');
+    p('  --file-only   Force file path to only display the file name and not the path');
     p('  -o, --output MODE');
     p('                Specify an output mode/format. One of');
     p('                  long: (the default) pretty');
@@ -388,7 +389,8 @@ function parseArgv(argv) {
         follow: false,
         tail_lines: -1,
         rig_check: false,
-        rig_check_ms: -1
+        rig_check_ms: -1,
+        file_only: false
     };
 
     // Turn '-iH' into '-i -H', except for argument-accepting options.
@@ -572,6 +574,9 @@ function parseArgv(argv) {
                 }
 
                 parsed.conditions.push(script);
+                break;
+            case '--file-only':
+                parsed.file_only=true
                 break;
             default: // arguments
                 if (!endOfOptions && arg.length > 0 && arg[0] === '-') {
@@ -763,10 +768,16 @@ function emitRecord(rec, line, opts, stylize) {
         var src = '';
         if (rec.src && rec.src.file) {
             var s = rec.src;
+            var file_show=s.file
+            if(opts.file_only){
+                var find1=file_show.lastIndexOf("/")
+                if(find1==-1){find1=file_show.lastIndexOf("\\")}
+                if(find1>-1){file_show=file_show.substring(find1+1,file_show.length)}
+            }
             if (s.func) {
-                src = format(' (%s:%d in %s)', s.file, s.line, s.func);
+                src = format(' (%s:%d in %s)', file_show, s.line, s.func);
             } else {
-                src = format(' (%s:%d)', s.file, s.line);
+                src = format(' (%s:%d)', file_show, s.line);
             }
             src = stylize(src, 'green');
         }
