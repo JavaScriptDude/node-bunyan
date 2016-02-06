@@ -1,13 +1,15 @@
 /*
- * Copyright (c) 2012 Trent Mick. All rights reserved.
+ * Copyright (c) 2015 Trent Mick. All rights reserved.
  *
  * Test the `bunyan` CLI.
  */
 
-var path = require('path');
+var p = console.warn;
 var exec = require('child_process').exec;
+var fs = require('fs');
+var path = require('path');
 var _ = require('util').format;
-var debug = console.warn;
+var vasync = require('vasync');
 
 // node-tap API
 if (require.cache[__dirname + '/tap4nodeunit.js'])
@@ -113,7 +115,7 @@ test('extrafield.log with color', function (t) {
             '[2012-02-08T22:56:52.856Z] \u001b[36m INFO\u001b[39m: '
             + 'myservice/123 '
             + 'on example.com: \u001b[36mMy message\u001b[39m'
-            + '\u001b[90m (extra=field)\u001b[39m\n\u001b[0m');
+            + ' (extra=field)\n\u001b[0m');
         t.end();
     });
 });
@@ -158,10 +160,15 @@ test('simple.log doesnotexist1.log doesnotexist2.log', function (t) {
             //   ENOENT, no such file or directory 'asdf.log'
             // but node v0.6.14:
             //   ENOENT, open 'asdf.log'
-            // Somewhat annoying change.
-            t.equal(stderr,
-                'bunyan: ENOENT, open \'doesnotexist1.log\'\nbunyan: ENOENT, '
-                + 'open \'doesnotexist2.log\'\n');
+            // io.js 2.2 (at least):
+            //   ENOENT: no such file or directory, open 'doesnotexist1.log'
+            var matches = [
+                /^bunyan: ENOENT.*?, open 'doesnotexist1.log'/m,
+                /^bunyan: ENOENT.*?, open 'doesnotexist2.log'/m,
+            ];
+            matches.forEach(function (match) {
+                t.ok(match.test(stderr), 'stderr matches ' + match.toString());
+            });
             t.end();
         }
     );
@@ -279,7 +286,7 @@ test('--level 40', function (t) {
     });
 });
 
-test('--condition "level === 10 && pid === 123"', function (t) {
+test('--condition "this.level === 10 && this.pid === 123"', function (t) {
     var expect = [
         '# levels\n',
         /* JSSTYLED */
@@ -291,14 +298,14 @@ test('--condition "level === 10 && pid === 123"', function (t) {
         'not a JSON line\n',
         '{"hi": "there"}\n'
     ].join('');
-    var cmd = _('%s -c "level === 10 && pid === 123" %s/corpus/all.log',
-        BUNYAN, __dirname);
+    var cmd = _('%s -c "this.level === 10 && this.pid === 123"'
+                + ' %s/corpus/all.log', BUNYAN, __dirname);
     exec(cmd, function (err, stdout, stderr) {
         t.ifError(err);
         t.equal(stdout, expect);
         var cmd = _(
-            '%s --condition "level === 10 && pid === 123" %s/corpus/all.log',
-            BUNYAN, __dirname);
+            '%s --condition "this.level === 10 && this.pid === 123"'
+            + ' %s/corpus/all.log', BUNYAN, __dirname);
         exec(cmd, function (err, stdout, stderr) {
             t.ifError(err);
             t.equal(stdout, expect);
@@ -307,13 +314,11 @@ test('--condition "level === 10 && pid === 123"', function (t) {
     });
 });
 
-// multiple
-// not sure if this is a bug or a feature.  let's call it a feature!
-test('multiple --conditions', function (t) {
+test('--condition "this.level === TRACE', function (t) {
     var expect = [
         '# levels\n',
         /* JSSTYLED */
-        '[2012-02-08T22:56:53.856Z]  WARN: myservice/1 on example.com: My message\n',
+        '[2012-02-08T22:56:50.856Z] TRACE: myservice/123 on example.com: My message\n',
         '\n',
         '# extra fields\n',
         '\n',
@@ -321,10 +326,30 @@ test('multiple --conditions', function (t) {
         'not a JSON line\n',
         '{"hi": "there"}\n'
     ].join('');
-    exec(_('%s %s/corpus/all.log ' +
-                 '-c "if (level === 40) pid = 1; true" ' +
-                 '-c "pid === 1"', BUNYAN, __dirname),
-             function (err, stdout, stderr) {
+    var cmd = _('%s -c "this.level === TRACE" %s/corpus/all.log',
+        BUNYAN, __dirname);
+    exec(cmd, function (err, stdout, stderr) {
+        t.ifError(err);
+        t.equal(stdout, expect);
+        t.done();
+    });
+});
+
+// multiple
+test('multiple --conditions', function (t) {
+    var expect = [
+        '# levels\n',
+        /* JSSTYLED */
+        '[2012-02-08T22:56:53.856Z]  WARN: myservice/123 on example.com: My message\n',
+        '\n',
+        '# extra fields\n',
+        '\n',
+        '# bogus\n',
+        'not a JSON line\n',
+        '{"hi": "there"}\n'
+    ].join('');
+    exec(_('%s %s/corpus/all.log -c "this.level === 40" -c "this.pid === 123"',
+            BUNYAN, __dirname), function (err, stdout, stderr) {
         t.ifError(err);
         t.equal(stdout, expect);
         t.end();
@@ -365,6 +390,8 @@ test('robust req handling', function (t) {
         '[2012-08-08T10:25:47.637Z]  INFO: amon-master/12859 on 9724a190-27b6-4fd8-830b-a574f839c67d: HeadAgentProbes handled: 200 (req_id=cce79d15-ffc2-487c-a4e4-e940bdaac31e, audit=true, remoteAddress=10.2.207.2, remotePort=50394, latency=3, secure=false, _audit=true, req.version=*)',
         '    HEAD /agentprobes?agent=ccf92af9-0b24-46b6-ab60-65095fdd3037 HTTP/1.1',
         '    --',
+        '    HTTP/1.1 200 OK',
+        '    --',
         '    route: {',
         '      "name": "HeadAgentProbes",',
         '      "version": false',
@@ -375,6 +402,25 @@ test('robust req handling', function (t) {
              function (err, stdout, stderr) {
         t.ifError(err);
         t.equal(stdout, expect);
+        t.end();
+    });
+});
+
+// Some past crashes from issues.
+test('should not crash on corpus/old-crashers/*.log', function (t) {
+    var oldCrashers = fs.readdirSync(
+        path.resolve(__dirname, 'corpus/old-crashers'))
+        .filter(function (f) { return f.slice(-4) === '.log'; });
+    vasync.forEachPipeline({
+        inputs: oldCrashers,
+        func: function (logName, next) {
+            exec(_('%s %s/corpus/old-crashers/%s', BUNYAN, __dirname, logName),
+                    function (err, stdout, stderr) {
+                next(err);
+            });
+        }
+    }, function (err, results) {
+        t.ifError(err);
         t.end();
     });
 });
